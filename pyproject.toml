@@ -1,0 +1,14 @@
+[project]
+name = "velocity-transformer"
+version = "0.1.0"
+description = "Transformer-based MIDI velocity prediction"
+requires-python = ">=3.11.9"
+dependencies = ["torch>=2.0.0", "mido>=1.3.0", "numpy>=1.24.0", "tqdm>=4.65.0"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cuda" }
+
+[[tool.uv.index]]
+name = "pytorch-cuda"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
