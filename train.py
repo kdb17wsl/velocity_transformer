@@ -15,6 +15,10 @@ def train():
     device = torch.device(DEVICE if torch.cuda.is_available() else "cpu")
     print(f"使用设备: {device}")
 
+    if device.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+
     # 数据
     train_loader, val_loader = get_dataloaders()
 
@@ -40,6 +44,7 @@ def train():
     scaler = GradScaler() if USE_AMP and device.type == "cuda" else None
 
     best_val_loss = float('inf')
+    bad_epochs = 0
 
     for epoch in range(1, EPOCHS + 1):
         # ========== 训练 ==========
@@ -48,13 +53,13 @@ def train():
         t0 = time.time()
 
         for batch_idx, (inputs, targets) in enumerate(train_loader):
-            inputs = inputs.to(device)
-            targets = targets.to(device)
+            inputs = inputs.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
 
             # padding mask: targets == -100 的位置
             padding_mask = (targets == -100)
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
             if scaler is not None:
                 with autocast():
@@ -89,8 +94,8 @@ def train():
 
         with torch.no_grad():
             for inputs, targets in val_loader:
-                inputs = inputs.to(device)
-                targets = targets.to(device)
+                inputs = inputs.to(device, non_blocking=True)
+                targets = targets.to(device, non_blocking=True)
                 padding_mask = (targets == -100)
 
                 logits = model(inputs, padding_mask=padding_mask)
@@ -116,6 +121,7 @@ def train():
         # 保存最佳模型
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
+            bad_epochs = 0
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -124,6 +130,14 @@ def train():
                 'val_mae': avg_val_mae,
             }, os.path.join(CHECKPOINT_DIR, 'best_model.pt'))
             print(f"  → 已保存最佳模型 (Val Loss: {avg_val_loss:.4f})")
+        elif best_val_loss - avg_val_loss < EARLY_STOP_MIN_DELTA:
+            bad_epochs += 1
+            print(f"  → 验证集未明显提升，早停计数: {bad_epochs}/{EARLY_STOP_PATIENCE}")
+            if bad_epochs >= EARLY_STOP_PATIENCE:
+                print(f"\n早停触发：连续 {EARLY_STOP_PATIENCE} 个 epoch 验证集没有明显提升。")
+                break
+        else:
+            bad_epochs = 0
 
     print(f"\n训练完成！最佳 Val Loss: {best_val_loss:.4f}")
 

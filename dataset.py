@@ -2,6 +2,8 @@ import os
 import glob
 import json
 import random
+import hashlib
+import pickle
 import mido
 import numpy as np
 import torch
@@ -15,10 +17,49 @@ class MidiVelocityDataset(Dataset):
         self.file_list = file_list
         self.is_train = is_train
         self.samples = []
+        os.makedirs(CACHE_DIR, exist_ok=True)
         self._build_index()
+
+    def _cache_path(self, midi_path):
+        stat = os.stat(midi_path)
+        cache_key = f"{os.path.abspath(midi_path)}|{stat.st_size}|{stat.st_mtime_ns}|{TIME_TICK}|{MIN_NOTES}"
+        digest = hashlib.sha1(cache_key.encode("utf-8")).hexdigest()
+        return os.path.join(CACHE_DIR, f"{digest}.pkl")
+
+    def _load_cached_notes(self, midi_path):
+        cache_path = self._cache_path(midi_path)
+        if not os.path.exists(cache_path):
+            return None
+
+        try:
+            with open(cache_path, "rb") as f:
+                payload = pickle.load(f)
+        except Exception:
+            return None
+
+        return payload.get("notes") if isinstance(payload, dict) else None
+
+    def _save_cached_notes(self, midi_path, notes):
+        cache_path = self._cache_path(midi_path)
+        tmp_path = f"{cache_path}.tmp"
+        payload = {"notes": notes}
+        try:
+            with open(tmp_path, "wb") as f:
+                pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp_path, cache_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
     def _extract_notes(self, midi_path):
         """从 MIDI 文件提取音符列表，返回 [(pitch, onset_tick, dur_tick, velocity), ...]"""
+        cached_notes = self._load_cached_notes(midi_path)
+        if cached_notes is not None:
+            return cached_notes
+
         try:
             mid = mido.MidiFile(midi_path)
         except Exception:
@@ -65,6 +106,8 @@ class MidiVelocityDataset(Dataset):
             onset = round(n['onset_tick'] * tick_to_second / TIME_TICK)
             dur = max(1, round(n['dur_tick'] * tick_to_second / TIME_TICK))
             result.append((n['pitch'], onset, dur, n['velocity']))
+
+        self._save_cached_notes(midi_path, result)
         return result
 
     def _build_index(self):
@@ -140,6 +183,8 @@ def get_dataloaders():
         num_workers=NUM_WORKERS,
         pin_memory=True,
         drop_last=True,
+        persistent_workers=NUM_WORKERS > 0,
+        prefetch_factor=4 if NUM_WORKERS > 0 else None,
     )
     val_loader = DataLoader(
         val_ds,
@@ -147,6 +192,8 @@ def get_dataloaders():
         shuffle=False,
         num_workers=NUM_WORKERS,
         pin_memory=True,
+        persistent_workers=NUM_WORKERS > 0,
+        prefetch_factor=4 if NUM_WORKERS > 0 else None,
     )
 
     return train_loader, val_loader
